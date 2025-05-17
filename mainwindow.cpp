@@ -11,6 +11,7 @@
 #include <QFormLayout>
 #include <QFileInfo>
 #include <QProcessEnvironment>
+#include <QTimer>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -129,8 +130,15 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     if (matlabProcess && matlabProcess->state() == QProcess::Running) {
+        // First try to terminate gracefully
         matlabProcess->terminate();
-        matlabProcess->waitForFinished(3000);
+        
+        // Use a timer to kill the process if termination takes too long
+        QTimer::singleShot(1000, [this]() {
+            if (matlabProcess && matlabProcess->state() == QProcess::Running) {
+                matlabProcess->kill();
+            }
+        });
     }
 }
 
@@ -189,45 +197,12 @@ void MainWindow::runMatlab()
     outputText->clear();
     outputText->append("Starting MATLAB...");
     
-    if (matlabProcess->state() == QProcess::Running) {
-        matlabProcess->terminate();
-        matlabProcess->waitForFinished(3000);
-    }
-    
+    // Prepare arguments and command
     QStringList arguments;
     arguments << "-batch";       // 批处理模式，完成后自动退出
     
-    // 解析参数输入框的参数
-    QStringList paramList;
+    // 获取参数输入框的参数字符串
     QString paramText = parametersEdit->text().trimmed();
-    
-    // 处理引号内的参数（支持带空格的参数）
-    bool inQuotes = false;
-    QString currentParam;
-    
-    for (int i = 0; i < paramText.length(); i++) {
-        QChar c = paramText.at(i);
-        
-        if (c == '"') {
-            inQuotes = !inQuotes;
-            if (!inQuotes && !currentParam.isEmpty()) {
-                paramList.append(currentParam);
-                currentParam.clear();
-            }
-        } else if (c == ' ' && !inQuotes) {
-            if (!currentParam.isEmpty()) {
-                paramList.append(currentParam);
-                currentParam.clear();
-            }
-        } else {
-            currentParam.append(c);
-        }
-    }
-    
-    // 添加最后一个参数（如果有）
-    if (!currentParam.isEmpty()) {
-        paramList.append(currentParam);
-    }
     
     // 构建MATLAB命令
     QString command;
@@ -256,26 +231,13 @@ void MainWindow::runMatlab()
             // 如果是函数，直接调用函数并传递参数
             command += scriptName;
             
-            // 添加参数
-            if (!paramList.isEmpty()) {
-                command += "(";
-                for (int i = 0; i < paramList.size(); i++) {
-                    QString param = paramList.at(i);
-                    bool isNumber = false;
-                    param.toDouble(&isNumber);
-                    
-                    // 如果不是数字，则添加引号
-                    if (!isNumber) {
-                        command += QString("'%1'").arg(param);
-                    } else {
-                        command += param;
-                    }
-                    
-                    if (i < paramList.size() - 1) {
-                        command += ", ";
-                    }
-                }
-                command += ")";
+            // 修改参数处理方式，添加逗号分隔符
+            if (!paramText.isEmpty()) {
+                // 将空格替换为逗号，用于简单的参数列表
+                QString formattedParams = paramText;
+                formattedParams.replace(" ", ",");
+                
+                command += "(" + formattedParams + ")";
             }
             command += ";";
         } else {
