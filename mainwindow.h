@@ -33,6 +33,9 @@ private:
     QPushButton *runButton;
     QTextEdit *outputText;
     
+    // 参数输入
+    QLineEdit *parametersEdit;
+    
     // MATLAB Process
     QProcess *matlabProcess;
     

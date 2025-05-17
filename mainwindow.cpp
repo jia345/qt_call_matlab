@@ -7,8 +7,14 @@
 #include <QSettings>
 #include <QFile>
 #include <QFileDialog>
-#include <QTextCodec>
 #include <QTextStream>
+#include <QFormLayout>
+#include <QFileInfo>
+#include <QProcessEnvironment>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -20,6 +26,7 @@ MainWindow::MainWindow(QWidget *parent)
     setCentralWidget(centralWidget);
     QVBoxLayout *mainLayout = new QVBoxLayout(centralWidget);
 
+    // MATLAB路径设置组
     QGroupBox *matlabGroup = new QGroupBox("MATLAB Executable", this);
     QHBoxLayout *matlabLayout = new QHBoxLayout(matlabGroup);
     
@@ -59,14 +66,15 @@ MainWindow::MainWindow(QWidget *parent)
     matlabLayout->addWidget(matlabPathEdit);
     matlabLayout->addWidget(browseMatlabButton);
     
+    // 脚本路径设置组
     QGroupBox *scriptGroup = new QGroupBox("MATLAB Script", this);
     QHBoxLayout *scriptLayout = new QHBoxLayout(scriptGroup);
     
     QLabel *scriptLabel = new QLabel("Script Path:", this);
     scriptPathEdit = new QLineEdit(this);
     
-    // Set default script path
-    QString defaultScriptPath = "D:/WKS/repos/qt_call_matlab/example.m";
+    // 设置默认脚本路径为calculate_with_parameters.m
+    QString defaultScriptPath = "D:/WKS/repos/qt_call_matlab/calculate_with_parameters.m";
     if (QFile::exists(defaultScriptPath)) {
         scriptPathEdit->setText(defaultScriptPath);
     }
@@ -77,19 +85,36 @@ MainWindow::MainWindow(QWidget *parent)
     scriptLayout->addWidget(scriptPathEdit);
     scriptLayout->addWidget(browseScriptButton);
     
+    // 通用参数输入组
+    QGroupBox *generalParamGroup = new QGroupBox("Function Parameters", this);
+    QVBoxLayout *generalParamLayout = new QVBoxLayout(generalParamGroup);
+    
+    QLabel *paramsHelpLabel = new QLabel("Enter parameters separated by spaces (e.g. '10 5 hello \"quoted text\"'):", this);
+    parametersEdit = new QLineEdit(this);
+    parametersEdit->setPlaceholderText("Enter parameters here...");
+    parametersEdit->setText("10 5"); // 默认参数值
+    
+    generalParamLayout->addWidget(paramsHelpLabel);
+    generalParamLayout->addWidget(parametersEdit);
+    
+    // 运行按钮
     runButton = new QPushButton("Run MATLAB Script", this);
     
+    // 输出显示组
     QGroupBox *outputGroup = new QGroupBox("MATLAB Output", this);
     QVBoxLayout *outputLayout = new QVBoxLayout(outputGroup);
     outputText = new QTextEdit(this);
     outputText->setReadOnly(true);
     outputLayout->addWidget(outputText);
     
+    // 添加所有组件到主布局
     mainLayout->addWidget(matlabGroup);
     mainLayout->addWidget(scriptGroup);
+    mainLayout->addWidget(generalParamGroup);
     mainLayout->addWidget(runButton);
     mainLayout->addWidget(outputGroup);
     
+    // 连接信号和槽
     connect(browseScriptButton, &QPushButton::clicked, this, &MainWindow::browseScriptFile);
     connect(browseMatlabButton, &QPushButton::clicked, this, &MainWindow::browseMatlabExecutable);
     connect(runButton, &QPushButton::clicked, this, &MainWindow::runMatlab);
@@ -156,6 +181,11 @@ void MainWindow::runMatlab()
     matlabPath = QDir::toNativeSeparators(matlabPath);
     scriptPath = QDir::toNativeSeparators(scriptPath);
     
+    // 获取脚本所在目录路径和文件名（不带扩展名）
+    QFileInfo scriptInfo(scriptPath);
+    QString scriptDir = QDir::toNativeSeparators(scriptInfo.absolutePath());
+    QString scriptName = scriptInfo.baseName();
+    
     outputText->clear();
     outputText->append("Starting MATLAB...");
     
@@ -165,15 +195,105 @@ void MainWindow::runMatlab()
     }
     
     QStringList arguments;
-    arguments << "-nosplash";
-    arguments << "-nodesktop";
-    arguments << "-batch";
+    arguments << "-batch";       // 批处理模式，完成后自动退出
     
-    QString command = QString("run('%1'); quit;").arg(scriptPath);
+    // 解析参数输入框的参数
+    QStringList paramList;
+    QString paramText = parametersEdit->text().trimmed();
+    
+    // 处理引号内的参数（支持带空格的参数）
+    bool inQuotes = false;
+    QString currentParam;
+    
+    for (int i = 0; i < paramText.length(); i++) {
+        QChar c = paramText.at(i);
+        
+        if (c == '"') {
+            inQuotes = !inQuotes;
+            if (!inQuotes && !currentParam.isEmpty()) {
+                paramList.append(currentParam);
+                currentParam.clear();
+            }
+        } else if (c == ' ' && !inQuotes) {
+            if (!currentParam.isEmpty()) {
+                paramList.append(currentParam);
+                currentParam.clear();
+            }
+        } else {
+            currentParam.append(c);
+        }
+    }
+    
+    // 添加最后一个参数（如果有）
+    if (!currentParam.isEmpty()) {
+        paramList.append(currentParam);
+    }
+    
+    // 构建MATLAB命令
+    QString command;
+    
+    // 首先切换到脚本所在目录
+    command = QString("cd('%1'); ").arg(scriptDir);
+    
+    // 判断是函数还是脚本
+    QFileInfo fileInfo(scriptPath);
+    QString ext = fileInfo.suffix().toLower();
+    
+    if (ext == "m") {
+        // 读取文件以检查是否为函数
+        QFile file(scriptPath);
+        bool isFunction = false;
+        
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QTextStream in(&file);
+            QString firstLine = in.readLine();
+            // 如果第一行以"function"开头，则为函数文件
+            isFunction = firstLine.trimmed().startsWith("function", Qt::CaseInsensitive);
+            file.close();
+        }
+        
+        if (isFunction) {
+            // 如果是函数，直接调用函数并传递参数
+            command += scriptName;
+            
+            // 添加参数
+            if (!paramList.isEmpty()) {
+                command += "(";
+                for (int i = 0; i < paramList.size(); i++) {
+                    QString param = paramList.at(i);
+                    bool isNumber = false;
+                    param.toDouble(&isNumber);
+                    
+                    // 如果不是数字，则添加引号
+                    if (!isNumber) {
+                        command += QString("'%1'").arg(param);
+                    } else {
+                        command += param;
+                    }
+                    
+                    if (i < paramList.size() - 1) {
+                        command += ", ";
+                    }
+                }
+                command += ")";
+            }
+            command += ";";
+        } else {
+            // 如果是脚本，使用run命令
+            command += QString("run('%1');").arg(scriptName);
+        }
+    } else {
+        // 非.m文件，使用run命令
+        command += QString("run('%1');").arg(scriptPath);
+    }
+    
+    // 将命令添加到参数
     arguments << command;
     
+    // 启动MATLAB进程
     matlabProcess->start(matlabPath, arguments);
     
+    // 禁用运行按钮，直到进程结束
     runButton->setEnabled(false);
 }
 
@@ -181,13 +301,13 @@ void MainWindow::readMatlabOutput()
 {
     QByteArray stdOutput = matlabProcess->readAllStandardOutput();
     if (!stdOutput.isEmpty()) {
-        QString text = QString::fromUtf8(stdOutput);
+        QString text = QString::fromLocal8Bit(stdOutput);
         outputText->append(text);
     }
     
     QByteArray stdError = matlabProcess->readAllStandardError();
     if (!stdError.isEmpty()) {
-        QString text = QString::fromUtf8(stdError);
+        QString text = QString::fromLocal8Bit(stdError);
         outputText->append(text);
     }
 }
